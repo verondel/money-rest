@@ -535,60 +535,77 @@ app.get('/api/transactions-summary', async (req: any, res: any) => {
 
 
 app.get('/api/balance-history', async (req: any, res: any) => {
-  const { fio } = req.query;
-  console.log('VERA   /api/balance-history', fio)
-
-  if (!fio) {
-    return res.status(400).json({ error: 'Параметр "fio" обязателен.' });
-  }
-
   try {
-    // Разделение ФИО на фамилию, имя и отчество
-    const [surname, name, middle_name] = fio.split(' ');
+    const { fio, startDate, endDate } = req.query;
+    console.log('VERA  /api/balance-history Date Filter 2:', startDate, endDate);
 
-    if (!surname || !name || !middle_name) {
-      return res
-        .status(400)
-        .json({ error: 'Введите полное ФИО в формате: Фамилия Имя Отчество' });
+    if (!fio) {
+      return res.status(400).json({ error: 'ФИО пользователя обязательно для запроса' });
     }
 
-    // Поиск клиента по ФИО
+    const [surname, name, middleName] = fio.split(' ');
+
+    if (!surname || !name || !middleName) {
+      return res.status(400).json({ error: 'Введите ФИО в формате: Фамилия Имя Отчество' });
+    }
+
+    // Найти пользователя по ФИО
     const client = await prisma.client.findFirst({
       where: {
         surname,
         name,
-        middle_name,
+        middle_name: middleName,
       },
     });
 
     if (!client) {
-      return res.status(404).json({ error: 'Клиент с указанным ФИО не найден.' });
+      return res.status(404).json({ error: 'Пользователь с таким ФИО не найден' });
     }
 
-    // Получение транзакций клиента и подсчет баланса на момент каждой транзакции
+    // Установить фильтры по дате
+    const dateFilter: { gte?: Date; lte?: Date } = {};
+    if (startDate) {
+      const parsedStartDate = new Date(startDate);
+      if (isNaN(parsedStartDate.getTime())) {
+        return res.status(400).json({ error: 'Некорректная дата начала' });
+      }
+      dateFilter.gte = parsedStartDate;
+    }
+    if (endDate) {
+      const parsedEndDate = new Date(endDate);
+      if (isNaN(parsedEndDate.getTime())) {
+        return res.status(400).json({ error: 'Некорректная дата конца' });
+      }
+      dateFilter.lte = parsedEndDate;
+    }
+
+    console.log('VERA  /api/balance-history Date Filter 2:', dateFilter);
+
+    // Получить транзакции пользователя
     const transactions = await prisma.transaction.findMany({
-      where: { clientId: client.id },
-      orderBy: { date: 'asc' },
+      where: {
+        clientId: client.id,
+        ...(Object.keys(dateFilter).length > 0 && { date: dateFilter }), // Применяем фильтр только при наличии дат
+      },
+      orderBy: {
+        date: 'asc',
+      },
     });
 
-    let currentBalance = 0;
-    const balanceHistory = transactions.map((txn: any) => {
-      currentBalance += txn.amount; // Увеличиваем или уменьшаем баланс
+    // Рассчитать остатки на основе транзакций
+    let balance = 0;
+    const balanceHistory = transactions.map((transaction: any) => {
+      balance += transaction.amount;
       return {
-        date: txn.date,
-        balance: currentBalance,
+        date: transaction.date,
+        balance,
       };
     });
 
-    // Возврат истории баланса
-    res.json({
-      clientId: client.id,
-      clientName: `${client.surname} ${client.name} ${client.middle_name}`,
-      transactions: balanceHistory,
-    });
+    res.json({ transactions: balanceHistory });
   } catch (error) {
-    console.error('Ошибка при получении истории баланса:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера.' });
+    console.error('Ошибка получения истории баланса:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
 
