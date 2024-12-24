@@ -78,7 +78,7 @@ app.post("/api/check-client", async (req: any, res: any) => {
       },
     });
 
-    console.log('your user is: ', name, surname, middle_name)
+    console.log('VERA (/api/check-client) your user is: ', name, surname, middle_name)
     console.log(user)
 
     if (!user) {
@@ -268,17 +268,30 @@ app.get("/api/all-transactions", async (req: any, res: any) => {
   try {
     const { clientName } = req.query;
 
+    let whereCondition = {}; // Условие для фильтрации транзакций
+
+    // Если `clientName` передан, выполняем точную фильтрацию по ФИО
+    if (clientName) {
+      const [surname, name, middle_name] = clientName.trim().split(" ");
+
+      if (!surname || !name || !middle_name) {
+        return res
+          .status(400)
+          .json({ message: "ФИО должно включать фамилию, имя и отчество." });
+      }
+
+      whereCondition = {
+        client: {
+          surname: { equals: surname.trim(), mode: "insensitive" },
+          name: { equals: name.trim(), mode: "insensitive" },
+          middle_name: { equals: middle_name.trim(), mode: "insensitive" },
+        },
+      };
+    }
+
+    // Получаем транзакции с фильтрацией (если указано ФИО) или все транзакции
     const transactions = await prisma.transaction.findMany({
-      where: clientName
-        ? {
-          client: {
-            OR: [
-              { name: { contains: clientName.trim(), mode: "insensitive" } },
-              { surname: { contains: clientName.trim(), mode: "insensitive" } },
-            ],
-          },
-        }
-        : {}, // Если clientName передан, фильтруем по имени и фамилии
+      where: whereCondition,
       select: {
         id: true,
         date: true,
@@ -288,6 +301,8 @@ app.get("/api/all-transactions", async (req: any, res: any) => {
           select: {
             name: true,
             surname: true,
+            middle_name: true,
+            wallet: true,
           },
         },
         bank: {
@@ -300,11 +315,280 @@ app.get("/api/all-transactions", async (req: any, res: any) => {
         date: "desc",
       },
     });
-    console.log('VERA all transactions')
+
+    console.log("VERA (/api/all-transactions): Все транзакции: ----------------------------------- ", transactions);
+
     return res.json(transactions);
   } catch (error) {
     console.error("Ошибка получения транзакций:", error);
     return res.status(500).json({ message: "Ошибка на сервере" });
+  }
+});
+
+
+// Маршрут для получения баланса пользователя
+app.get("/api/balance", async (req: any, res: any) => {
+  try {
+    // Получаем userId из query-параметров
+    const { userId } = req.query;
+    console.log('VERA user 0: ', userId)
+
+
+    // Проверяем, указан ли userId
+    if (!userId) {
+      return res.status(400).json({ error: "Необходимо указать userId." });
+    }
+
+    console.log('VERA user 1: ', userId)
+
+    // Проверяем, существует ли клиент с данным userId
+    const user = await prisma.client.findUnique({
+      where: { id: parseInt(userId) },
+      select: { id: true, name: true, surname: true },
+    });
+
+    console.log('VERA user 2: ', user)
+    if (!user) {
+      return res.status(404).json({ error: "Пользователь не найден." });
+    }
+
+    // Получаем все транзакции пользователя и вычисляем сумму
+    const transactions = await prisma.transaction.findMany({
+      where: { clientId: parseInt(userId) },
+      select: { amount: true },
+    });
+
+    // Суммируем все транзакции
+    const balance = transactions.reduce((total: any, transaction: any) => total + transaction.amount, 0);
+
+    // Возвращаем баланс пользователя
+    return res.status(200).json({
+      userId: user.id,
+      name: `${user.name} ${user.surname}`,
+      balance: balance.toFixed(2), // Ограничиваем до 2-х знаков после запятой
+    });
+  } catch (error) {
+    console.error("Ошибка получения баланса:", error);
+    return res.status(500).json({ error: "Ошибка сервера. Попробуйте позже." });
+  }
+});
+
+
+app.post("/api/withdraw", async (req: any, res: any) => {
+  try {
+    const { userId, bankId, amount } = req.body;
+
+    // Проверка входных данных
+    if (!userId || !bankId || typeof amount !== "number") {
+      return res.status(400).json({ error: "Некорректные входные данные" });
+    }
+
+    if (amount <= 0) {
+      return res.status(400).json({ error: "Сумма должна быть положительным числом" });
+    }
+
+    // Проверяем, существует ли пользователь
+    const user = await prisma.client.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: "Пользователь не найден" });
+    }
+
+    // Рассчитываем текущий баланс пользователя
+    const transactions = await prisma.transaction.findMany({
+      where: { clientId: userId },
+      select: { amount: true },
+    });
+
+    const currentBalance = transactions.reduce((sum: any, transaction: any) => sum + transaction.amount, 0);
+
+    // Проверяем, достаточно ли средств для снятия
+    if (currentBalance < amount) {
+      return res.status(400).json({ error: "Недостаточно средств для снятия" });
+    }
+
+    // Создаем транзакцию со снятием
+    const withdrawal = await prisma.transaction.create({
+      data: {
+        clientId: userId,
+        bankId: bankId,
+        date: new Date(),
+        amount: -amount, // Отрицательное значение для снятия
+        approved: true, // Одобряем операцию сразу
+      },
+    });
+
+    return res.status(200).json({
+      message: "Снятие выполнено успешно",
+      transaction: withdrawal,
+    });
+  } catch (error) {
+    console.error("Ошибка выполнения снятия:", error);
+    return res.status(500).json({ error: "Внутренняя ошибка сервера" });
+  }
+});
+
+
+// Возвращает номер телефона клиента по id клиента  
+app.get("/api/client-number", async (req: any, res: any) => {
+  try {
+    const { clientId } = req.query;
+
+    if (!clientId) {
+      return res.status(400).json({ message: "Не указан clientId" });
+    }
+
+    // Получаем данные клиента из базы
+    const client = await prisma.client.findUnique({
+      where: { id: parseInt(clientId) },
+      select: { phone: true }, // Возвращаем только поле phone
+    });
+
+    if (!client) {
+      return res.status(404).json({ message: "Клиент не найден" });
+    }
+
+    return res.json({ phone: client.phone });
+  } catch (error) {
+    console.error("Ошибка получения номера клиента:", error);
+    return res.status(500).json({ message: "Ошибка на сервере" });
+  }
+});
+
+
+
+// для получения ID клиента по ФИО
+app.get("/api/client-id", async (req: any, res: any) => {
+  try {
+    const { name, surname, middle_name } = req.query;
+
+    if (!name || !surname || !middle_name) {
+      return res.status(400).json({ message: "Все поля (name, surname, middle_name) должны быть указаны" });
+    }
+
+    // Поиск клиента в базе данных
+    const client = await prisma.client.findFirst({
+      where: {
+        name: name.trim(),
+        surname: surname.trim(),
+        middle_name: middle_name.trim(),
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!client) {
+      return res.status(404).json({ message: "Клиент не найден" });
+    }
+
+    return res.json({ clientId: client.id });
+  } catch (error) {
+    console.error("Ошибка получения ID клиента:", error);
+    return res.status(500).json({ message: "Ошибка на сервере" });
+  }
+});
+
+
+// Получения данных о приходах и расходах
+app.get('/api/transactions-summary', async (req: any, res: any) => {
+  try {
+    const summary = await prisma.client.findMany({
+      select: {
+        id: true,
+        name: true,
+        surname: true,
+        middle_name: true,
+        transactions: {
+          select: {
+            amount: true,
+          },
+        },
+      },
+    });
+
+    const result = summary.map((user: any) => {
+      const userName = `${user.surname} ${user.name} ${user.middle_name.charAt(0)}.`;
+      const income = user.transactions
+        .filter((transaction: any) => transaction.amount > 0)
+        .reduce((sum: any, transaction: any) => sum + transaction.amount, 0);
+      const expense = user.transactions
+        .filter((transaction: any) => transaction.amount < 0)
+        .reduce((sum: any, transaction: any) => sum + Math.abs(transaction.amount), 0);
+
+      return {
+        userId: user.id,
+        userName,
+        income,
+        expense,
+      };
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error('Ошибка получения сводных данных транзакций:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+
+app.get('/api/balance-history', async (req: any, res: any) => {
+  const { fio } = req.query;
+  console.log('VERA   /api/balance-history', fio)
+
+  if (!fio) {
+    return res.status(400).json({ error: 'Параметр "fio" обязателен.' });
+  }
+
+  try {
+    // Разделение ФИО на фамилию, имя и отчество
+    const [surname, name, middle_name] = fio.split(' ');
+
+    if (!surname || !name || !middle_name) {
+      return res
+        .status(400)
+        .json({ error: 'Введите полное ФИО в формате: Фамилия Имя Отчество' });
+    }
+
+    // Поиск клиента по ФИО
+    const client = await prisma.client.findFirst({
+      where: {
+        surname,
+        name,
+        middle_name,
+      },
+    });
+
+    if (!client) {
+      return res.status(404).json({ error: 'Клиент с указанным ФИО не найден.' });
+    }
+
+    // Получение транзакций клиента и подсчет баланса на момент каждой транзакции
+    const transactions = await prisma.transaction.findMany({
+      where: { clientId: client.id },
+      orderBy: { date: 'asc' },
+    });
+
+    let currentBalance = 0;
+    const balanceHistory = transactions.map((txn: any) => {
+      currentBalance += txn.amount; // Увеличиваем или уменьшаем баланс
+      return {
+        date: txn.date,
+        balance: currentBalance,
+      };
+    });
+
+    // Возврат истории баланса
+    res.json({
+      clientId: client.id,
+      clientName: `${client.surname} ${client.name} ${client.middle_name}`,
+      transactions: balanceHistory,
+    });
+  } catch (error) {
+    console.error('Ошибка при получении истории баланса:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера.' });
   }
 });
 
