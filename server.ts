@@ -492,10 +492,28 @@ app.get("/api/client-id", async (req: any, res: any) => {
 });
 
 
-// Получения данных о приходах и расходах
 app.get('/api/transactions-summary', async (req: any, res: any) => {
+  console.log('VERA -- /api/transactions-summary')
   try {
+    const filter = req.query.filter;
+
+    const filterCondition = filter
+      ? {
+        where: {
+          OR: filter.split(',').map((fio: any) => {
+            const [surname, name, middle_name] = fio.trim().split(' ');
+            return {
+              surname,
+              name,
+              middle_name,
+            };
+          }),
+        },
+      }
+      : {};
+    console.log('VERA -- /api/transactions-summary', filterCondition['where'] ? filterCondition['where']['OR'] : 'vera nothing')
     const summary = await prisma.client.findMany({
+      ...filterCondition,
       select: {
         id: true,
         name: true,
@@ -508,7 +526,7 @@ app.get('/api/transactions-summary', async (req: any, res: any) => {
         },
       },
     });
-
+    console.log('result = ', summary)
     const result = summary.map((user: any) => {
       const userName = `${user.surname} ${user.name} ${user.middle_name.charAt(0)}.`;
       const income = user.transactions
@@ -525,6 +543,7 @@ app.get('/api/transactions-summary', async (req: any, res: any) => {
         expense,
       };
     });
+    console.log('VERA -- /api/transactions-summary', result)
 
     res.json(result);
   } catch (error) {
@@ -532,6 +551,7 @@ app.get('/api/transactions-summary', async (req: any, res: any) => {
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
+
 
 
 app.get('/api/balance-history', async (req: any, res: any) => {
